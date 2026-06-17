@@ -20,24 +20,37 @@ print("Computing semantic scores...")
 sem_scores = (embs @ jd.T).squeeze()  # (100000,)
 
 # ── Constants ──────────────────────────────────────────────────────
+
 CONSULTING = {
     "tcs", "infosys", "wipro", "accenture", "cognizant",
     "capgemini", "mindtree", "hcl", "tech mahindra",
     "mphasis", "hexaware", "ltimindtree", "persistent",
     "genpact", "dxc technology", "unisys", "kyndryl"
 }
-
-IRRELEVANT_TITLES = {
-    "marketing", "sales", "hr manager", "recruiter",
-    "designer", "content writer", "finance", "legal",
-    "product manager", "account manager", "business development",
-    "operations", "customer success", "support engineer"
+# Only 47 unique titles in dataset — whitelist is exhaustive and safer
+ML_RELEVANT_TITLES = {
+    # Clearly ML
+    "ml engineer", "senior ml engineer", "junior ml engineer",
+    "staff machine learning engineer", "machine learning engineer",
+    "senior machine learning engineer", "lead ml engineer",
+    "ai engineer", "senior ai engineer", "lead ai engineer",
+    "ai specialist", "ai research engineer",
+    "data scientist", "senior data scientist",
+    "applied ml engineer", "senior applied scientist",
+    "nlp engineer", "senior nlp engineer",
+    "search engineer", "recommendation systems engineer",
+    "computer vision engineer",
+    "senior software engineer (ml)", "software engineer (ml)",
+    "staff ml engineer",
+    # Adjacent — legitimate but will score lower naturally
+    "software engineer", "senior software engineer",
+    "backend engineer", "data engineer", "senior data engineer",
+    "analytics engineer", "cloud engineer", "devops engineer",
 }
 
 CV_PRIMARY_SKILLS = {
     "cnn", "opencv", "yolo", "object detection", "image classification",
-    "image segmentation", "computer vision", "diffusion models",
-    "stable diffusion", "gan", "gans"
+    "image segmentation", "computer vision",
 }
 
 NLP_IR_SKILLS = {
@@ -106,13 +119,16 @@ def is_honeypot(c):
     return flags >= 1
 
 
-# ── Scoring ────────────────────────────────────────────────────────
 def score_candidate(idx):
     c   = cands[idx]
     p   = c["profile"]
     sig = c["redrob_signals"]
 
-    # Honeypot → zero
+    # Define these once at the top — used in multiple places below
+    title   = p.get("current_title", "").lower().strip()
+    country = p.get("country", "India")
+
+    # Honeypot check
     if is_honeypot(c):
         return 0.0
 
@@ -120,92 +136,70 @@ def score_candidate(idx):
     if not sig["open_to_work_flag"]:
         return 0.0
 
-    country = p.get("country", "India")
     if country != "India" and not sig.get("willing_to_relocate", False):
         return 0.0
 
-    title = p.get("current_title", "").lower()
-    if any(t in title for t in IRRELEVANT_TITLES):
+    # Title whitelist
+    if title not in ML_RELEVANT_TITLES:
         return 0.0
 
     # ── Multipliers ────────────────────────────────────────────────
     multiplier = 1.0
 
-    # Replace current consulting block with this
-    def consulting_career_weight(career_history):
-        """Returns fraction of career months spent at consulting firms."""
-        total_months      = 0
-        consulting_months = 0
-
-        for job in career_history:
-            months = job.get("duration_months", 0)
-            total_months += months
+    # Consulting fraction
+    def consulting_fraction(history):
+        total, consulting = 0, 0
+        for job in history:
+            m  = job.get("duration_months", 0)
             co = job.get("company", "").lower()
+            total += m
             if any(kw in co for kw in CONSULTING):
-                consulting_months += months
+                consulting += m
+        return consulting / total if total > 0 else 0.0
 
-        if total_months == 0:
-            return 0.0
-        return consulting_months / total_months
+    cf = consulting_fraction(c.get("career_history", []))
+    if   cf >= 0.80: multiplier *= 0.45
+    elif cf >= 0.50: multiplier *= 0.70
+    elif cf >= 0.30: multiplier *= 0.85
 
-    consulting_fraction = consulting_career_weight(c.get("career_history", []))
-
-    if consulting_fraction >= 0.80:
-        multiplier *= 0.45    # almost entirely consulting
-    elif consulting_fraction >= 0.50:
-        multiplier *= 0.70    # majority consulting career
-    elif consulting_fraction >= 0.30:
-        multiplier *= 0.85    # some consulting but product experience exists
-
-    # 2. Recency
+    # Recency
     last_active   = datetime.strptime(sig["last_active_date"], "%Y-%m-%d").date()
     days_inactive = (TODAY - last_active).days
     if   days_inactive > 180: multiplier *= 0.55
     elif days_inactive > 90:  multiplier *= 0.80
 
-    # 3. Outside India but willing to relocate
+    # Outside India but willing to relocate
     if country != "India" and sig.get("willing_to_relocate", False):
         multiplier *= 0.75
 
-    # 4. Junior seniority penalty
-    JUNIOR_SIGNALS = {"junior", "associate", "intern", "trainee", "graduate"}
-    if any(j in title for j in JUNIOR_SIGNALS):
-        multiplier *= 0.70
-
-    # 5. CV-primary penalty — fixed to catch equal CV/NLP counts
+    # CV-primary penalty
     cand_advanced = {s["name"].lower() for s in c["skills"]
                      if s["proficiency"] == "advanced"}
     cv_count  = sum(1 for sk in cand_advanced if sk in CV_PRIMARY_SKILLS)
     nlp_count = sum(1 for sk in cand_advanced if sk in NLP_IR_SKILLS)
 
-    if   cv_count >= 2 and nlp_count == 0:        multiplier *= 0.40
-    elif cv_count >= 2 and cv_count >= nlp_count: multiplier *= 0.60
-    elif cv_count > nlp_count:                    multiplier *= 0.70
+    if   cv_count >= 2 and nlp_count == 0:              multiplier *= 0.40
+    elif cv_count >= 2 and cv_count > nlp_count + 1:    multiplier *= 0.60
+    elif cv_count > nlp_count:                          multiplier *= 0.70
 
-    # 6. Framework enthusiast penalty
+    # Framework enthusiast penalty
     cand_all_skills  = {s["name"].lower() for s in c["skills"]}
     framework_skills = cand_all_skills & FRAMEWORK_ONLY_SKILLS
     real_ir_skills   = cand_all_skills & NLP_IR_SKILLS
 
-    # Original: required 2+ framework skills
     if len(framework_skills) >= 2 and len(real_ir_skills) <= 1:
         multiplier *= 0.65
 
-    # NEW: also penalize if LangChain is the FIRST listed advanced skill
-    # First listed = highest priority skill per candidate's own ordering
     first_advanced = next(
-        (s["name"].lower() for s in c["skills"] if s["proficiency"] == "advanced"),
-        ""
+        (s["name"].lower() for s in c["skills"]
+         if s["proficiency"] == "advanced"), ""
     )
     if first_advanced in FRAMEWORK_ONLY_SKILLS:
-        multiplier *= 0.75    # framework as top skill = concerning
+        multiplier *= 0.75
 
     # ── Component scores ───────────────────────────────────────────
-
-    # 1. Semantic similarity
     sem = float(sem_scores[idx])
 
-    # 2. Experience fit
     yoe = p.get("years_of_experience", 0)
     if   5 <= yoe <= 9:   exp = 1.00
     elif 9 < yoe <= 12:   exp = 0.85
@@ -213,30 +207,24 @@ def score_candidate(idx):
     elif yoe > 12:        exp = 0.65
     else:                 exp = 0.35
 
-    # 3. Notice period
     notice = sig.get("notice_period_days", 90)
     if   notice <= 30:  notice_s = 1.00
     elif notice <= 60:  notice_s = 0.75
     elif notice <= 90:  notice_s = 0.45
     else:               notice_s = 0.15
 
-    # 4. Engagement
     rr  = sig.get("recruiter_response_rate", 0)
     icr = sig.get("interview_completion_rate", 0)
     oar = sig.get("offer_acceptance_rate", -1)
-    if oar < 0:
-        oar = 0.5
+    if oar < 0: oar = 0.5
     engagement = 0.45 * rr + 0.35 * icr + 0.20 * oar
 
-    # 5. Recency
-    recency = float(np.exp(-days_inactive / 60))
+    recency  = float(np.exp(-days_inactive / 60))
 
-    # 6. GitHub
-    gh = sig.get("github_activity_score", -1)
+    gh       = sig.get("github_activity_score", -1)
     github_s = 0.30 if gh < 0 else min(1.0, gh / 60)
 
-    # 7. Assessment credibility
-    assessed = sig.get("skill_assessment_scores", {})
+    assessed  = sig.get("skill_assessment_scores", {})
     penalties = sum(
         1 for s in c["skills"]
         if s["proficiency"] == "advanced"
@@ -257,7 +245,6 @@ def score_candidate(idx):
     )
 
     return score * multiplier
-
 
 # ── Score all candidates ───────────────────────────────────────────
 print("Scoring 100K candidates...")
