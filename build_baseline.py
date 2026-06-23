@@ -1,4 +1,4 @@
-# precompute_baseline.py
+# build_baseline.py — Section-wise JD Embeddings with Importance Weights
 
 import json
 import numpy as np
@@ -10,51 +10,179 @@ OUT.mkdir(exist_ok=True)
 
 BGE_PREFIX = "Represent this sentence for searching relevant passages: "
 
-JD_SIGNAL_TEXT = """
-We need someone who is simultaneously comfortable with two things that sound contradictory:
-    1. Deep technical depth in modern ML systems — embeddings, retrieval, ranking, LLMs, fine-tuning.
-    2. Scrappy product-engineering attitude — willing to ship a working ranker in a week even if the underlying ML is "obviously suboptimal," because we need to learn from real users before we know what to actually optimize for.
-Things you absolutely need
-    • Production experience with embeddings-based retrieval systems (sentence-transformers, OpenAI embeddings, BGE, E5, or similar) deployed to real users. We don't care which model — we care that you've handled embedding drift, index refresh, retrieval-quality regression in production.
-    • Production experience with vector databases or hybrid search infrastructure — Pinecone, Weaviate, Qdrant, Milvus, OpenSearch, Elasticsearch, FAISS, or something similar. Again, the specific tech doesn't matter; the operational experience does.
-    • Strong Python. Yes really, we care about code quality.
-    • Hands-on experience designing evaluation frameworks for ranking systems — NDCG, MRR, MAP, offline-to-online correlation, A/B test interpretation. If you've never thought about how to evaluate a ranking system rigorously, this role will be very painful.
-nice-to-haves
-    • LLM fine-tuning experience (LoRA, QLoRA, PEFT)
-    • Experience with learning-to-rank models (XGBoost-based or neural)
-    • Prior exposure to HR-tech, recruiting tech, or marketplace products
-    • Background in distributed systems or large-scale inference optimization
-    • Open-source contributions in the AI/ML space
-things we don't care about
-    • Title-chasers. If your career trajectory shows you optimizing for "Senior" → "Staff" → "Principal" titles by switching companies every 1.5 years, we're not a fit. We need someone who plans to be here for 3+ years.
-    • Framework enthusiasts. If your GitHub is full of LangChain tutorials and your blog posts are "How I used [hot framework] to build [demo]" — that's fine but it's not what we need. We need people who think about systems, not frameworks.
-    • People who have only worked at consulting firms (TCS, Infosys, Wipro, Accenture, Cognizant, Capgemini, etc.) in their entire career. We've had bad fit experiences in both directions. If you're currently at one of these companies but have prior product-company experience, that's fine.
-    • People whose primary expertise is computer vision, speech, or robotics without significant NLP/IR exposure. We respect your work but you'd be re-learning fundamentals here.
-    • People whose work has been entirely on closed-source proprietary systems for 5+ years without external validation (papers, talks, open-source). We need to see how you think, not just trust that you can think.
-location    • Location: Pune/Noida-preferred but flexible. We have offices in Noida and Pune(mostly used Tue/Thu). We don't require any specific number of in-office days but we expect quarterly travel for offsites. Candidates in Hyderabad, Pune, Mumbai, Delhi NCR welcome to apply. Outside India: case-by-case, but we don't sponsor work visas.
-    • Notice period: We'd love sub-30-day notice. We can buy out up to 30 days. 30+ day notice candidates are still in scope but the bar gets higher.
-    """
+# ── 1. Parse JD into sections ──────────────────────────────────────
+# Each section gets its own embedding and an importance weight.
+# Weights reflect how much each section should influence candidate ranking.
+# Higher weight = more important for matching.
 
-# ── 1. Load model ─────────────────────────────────────────────────
+JD_SECTIONS = {
+    # ─── HIGHEST IMPORTANCE: Core technical requirements ───────────
+    "must_have_skills": {
+        "weight": 0.30,
+        "text": (
+            "Things you absolutely need: "
+            "Production experience with embeddings-based retrieval systems "
+            "(sentence-transformers, OpenAI embeddings, BGE, E5, or similar) "
+            "deployed to real users. Handled embedding drift, index refresh, "
+            "retrieval-quality regression in production. "
+            "Production experience with vector databases or hybrid search "
+            "infrastructure — Pinecone, Weaviate, Qdrant, Milvus, OpenSearch, "
+            "Elasticsearch, FAISS, or something similar. Operational experience matters. "
+            "Strong Python with high code quality. "
+            "Hands-on experience designing evaluation frameworks for ranking systems "
+            "— NDCG, MRR, MAP, offline-to-online correlation, A/B test interpretation."
+        ),
+    },
+
+    # ─── HIGH IMPORTANCE: Role mandate & first 90 days ─────────────
+    "role_mandate": {
+        "weight": 0.20,
+        "text": (
+            "Own the intelligence layer of a talent platform. "
+            "Ranking, retrieval, and matching systems that decide what recruiters "
+            "see when they search for candidates. "
+            "Ship a v2 ranking system with embeddings, hybrid retrieval, and "
+            "LLM-based re-ranking. Set up evaluation infrastructure — offline "
+            "benchmarks, online A/B testing, recruiter-feedback loops. "
+            "Drive long-term architecture of candidate-JD matching at scale."
+        ),
+    },
+
+    # ─── HIGH IMPORTANCE: Technical depth + product mindset ────────
+    "core_identity": {
+        "weight": 0.15,
+        "text": (
+            "Deep technical depth in modern ML systems — embeddings, retrieval, "
+            "ranking, LLMs, fine-tuning. "
+            "Scrappy product-engineering attitude — willing to ship a working "
+            "ranker in a week even if suboptimal, learning from real users. "
+            "Shipped end-to-end ranking, search, or recommendation system to "
+            "real users at meaningful scale. Strong opinions about retrieval "
+            "(hybrid vs dense), evaluation (offline vs online), and LLM "
+            "integration (when to fine-tune vs prompt)."
+        ),
+    },
+
+    # ─── MEDIUM IMPORTANCE: Nice-to-haves ─────────────────────────
+    "nice_to_have": {
+        "weight": 0.10,
+        "text": (
+            "LLM fine-tuning experience (LoRA, QLoRA, PEFT). "
+            "Experience with learning-to-rank models (XGBoost-based or neural). "
+            "Prior exposure to HR-tech, recruiting tech, or marketplace products. "
+            "Background in distributed systems or large-scale inference optimization. "
+            "Open-source contributions in the AI/ML space."
+        ),
+    },
+
+    # ─── MEDIUM IMPORTANCE: Experience band & disqualifiers ────────
+    "experience_profile": {
+        "weight": 0.10,
+        "text": (
+            "5-9 years experience, ideally 6-8 years total with 4-5 in applied "
+            "ML/AI roles at product companies, not pure services. "
+            "Must have production deployment experience, not purely research. "
+            "Must have written production code in the last 18 months. "
+            "Pre-LLM-era ML production experience valued over recent LangChain-only projects."
+        ),
+    },
+
+    # ─── LOWER IMPORTANCE: Location & logistics ────────────────────
+    "logistics": {
+        "weight": 0.04,
+        "text": (
+            "Location: Pune or Noida preferred. Offices used Tuesday/Thursday. "
+            "Candidates in Hyderabad, Mumbai, Delhi NCR welcome. "
+            "Quarterly travel for offsites. "
+            "Sub-30-day notice period preferred, can buy out up to 30 days. "
+            "Outside India case-by-case, no work visa sponsorship."
+        ),
+    },
+
+    # ─── LOWER IMPORTANCE: Culture & work style ────────────────────
+    "culture_fit": {
+        "weight": 0.03,
+        "text": (
+            "Async-first communication, writes extensively. "
+            "Disagrees openly and decides quickly. "
+            "Moves fast, comfortable with unstable codebase. "
+            "Plans to stay 3+ years, not optimizing for title progression."
+        ),
+    },
+}
+
+# ── 2. Load model ─────────────────────────────────────────────────
 print("Loading model...")
 model = SentenceTransformer('BAAI/bge-small-en-v1.5')
 
-# ── 2. Embed JD ───────────────────────────────────────────────────
-print("Embedding JD...")
-jd_embedding = model.encode(
-    [BGE_PREFIX + JD_SIGNAL_TEXT],
+# ── 3. Embed JD sections ──────────────────────────────────────────
+print(f"Embedding {len(JD_SECTIONS)} JD sections...")
+
+section_names = list(JD_SECTIONS.keys())
+section_texts = [JD_SECTIONS[name]["text"] for name in section_names]
+section_weights = np.array(
+    [JD_SECTIONS[name]["weight"] for name in section_names],
+    dtype="float32"
+)
+
+# Normalize weights to sum to 1.0 (safety check)
+section_weights /= section_weights.sum()
+
+print("Section weights:")
+for name, w in zip(section_names, section_weights):
+    print(f"  {name:25s} → {w:.3f}")
+
+# Embed all sections
+jd_section_embeddings = model.encode(
+    [BGE_PREFIX + text for text in section_texts],
     normalize_embeddings=True,
     convert_to_numpy=True
 ).astype("float32")
 
-np.save(OUT / "jd_baseline_emb.npy", jd_embedding)
-print(f"JD embedding shape: {jd_embedding.shape}")  # should be (1, 384)
+print(f"JD section embeddings shape: {jd_section_embeddings.shape}")
+# Should be (7, 384) — one embedding per positive section
 
-# ── 3. Load and flatten candidates ───────────────────────────────
-print("Loading candidates...")
+# ── 4. Embed anti-pattern text SEPARATELY (negative signal) ───────
+# This is NOT part of the positive weighted sum — it's used as a
+# penalty multiplier in rank.py to down-weight candidates who
+# semantically match these red flags.
+ANTI_PATTERN_TEXT = (
+    "Title-chasers switching companies every 1.5 years. "
+    "Framework enthusiasts whose work is LangChain tutorials and demos "
+    "rather than systems thinking. "
+    "Entire career at consulting firms like TCS, Infosys, Wipro, Accenture, "
+    "Cognizant, Capgemini without product-company experience. "
+    "Primary expertise in computer vision, speech, or robotics without "
+    "significant NLP/IR exposure. "
+    "Closed-source proprietary systems for 5+ years without external validation."
+)
+
+jd_anti_emb = model.encode(
+    [BGE_PREFIX + ANTI_PATTERN_TEXT],
+    normalize_embeddings=True,
+    convert_to_numpy=True
+).astype("float32")
+
+print(f"Anti-pattern embedding shape: {jd_anti_emb.shape}")  # (1, 384)
+
+# ── 5. Save JD artifacts ──────────────────────────────────────────
+np.save(OUT / "jd_section_embs.npy", jd_section_embeddings)
+np.save(OUT / "jd_section_weights.npy", section_weights)
+np.save(OUT / "jd_anti_pattern_emb.npy", jd_anti_emb)
+
+with open(OUT / "jd_section_meta.json", "w") as f:
+    json.dump({
+        "section_names": section_names,
+        "section_weights": section_weights.tolist(),
+        "section_texts": section_texts,
+    }, f, indent=2)
+
+print("JD artifacts saved.")
+
+# ── 6. Load and flatten candidates ───────────────────────────────
+print("\nLoading candidates...")
 candidate_ids = []
 candidate_texts = []
-raw_candidates_list = []
 
 with open("candidates.jsonl", "r", encoding="utf-8") as f:
     for line in f:
@@ -95,11 +223,10 @@ with open("candidates.jsonl", "r", encoding="utf-8") as f:
 
         candidate_ids.append(cand["candidate_id"])
         candidate_texts.append(flattened)
-        raw_candidates_list.append(cand)
 
 print(f"Loaded {len(candidate_texts)} candidates")
 
-# ── 4. Embed candidates ───────────────────────────────────────────
+# ── 7. Embed candidates ───────────────────────────────────────────
 print("Embedding candidates (this takes ~8-12 min on CPU)...")
 candidate_embeddings = model.encode(
     candidate_texts,
@@ -111,18 +238,17 @@ candidate_embeddings = model.encode(
 
 print(f"Embedding matrix shape: {candidate_embeddings.shape}")  # (100000, 384)
 
-# ── 5. Save artifacts ─────────────────────────────────────────────
+# ── 8. Save candidate artifacts ───────────────────────────────────
 np.save(OUT / "candidate_baseline_embs.npy", candidate_embeddings)
 
 with open(OUT / "candidate_ids.json", "w") as f:
     json.dump(candidate_ids, f)
 
-with open(OUT / "candidates_raw.json", "w") as f:
-    json.dump(raw_candidates_list, f)
-
 print("\nAll artifacts saved:")
 print(f"  candidate_baseline_embs.npy  {candidate_embeddings.nbytes / 1e6:.1f} MB")
-print(f"  jd_baseline_emb.npy")
+print(f"  jd_section_embs.npy         ({jd_section_embeddings.shape})")
+print(f"  jd_section_weights.npy      ({section_weights.shape})")
+print(f"  jd_anti_pattern_emb.npy     ({jd_anti_emb.shape})")
+print(f"  jd_section_meta.json")
 print(f"  candidate_ids.json")
-print(f"  candidates_raw.json")
 print("Done.")

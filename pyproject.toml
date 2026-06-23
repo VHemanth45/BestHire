@@ -9,4 +9,5 @@ dependencies = [
     "numpy>=2.4.6",
     "pandas>=3.0.3",
     "sentence-transformers>=5.5.1",
+    "torch>=2.0.0",
 ]

@@ -37,6 +37,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "sentence-transformers" },
+    { name = "torch" },
 ]
 
 [package.metadata]
@@ -45,6 +46,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "pandas", specifier = ">=3.0.3" },
     { name = "sentence-transformers", specifier = ">=5.5.1" },
+    { name = "torch", specifier = ">=2.0.0" },
 ]
 
 [[package]]

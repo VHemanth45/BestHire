@@ -3,21 +3,74 @@
 import numpy as np
 import json
 import pandas as pd
+import time
 from datetime import datetime, date
 from pathlib import Path
+from sentence_transformers import CrossEncoder
 
 OUT = Path("artifacts")
+
+# ── Configuration ──────────────────────────────────────────────────
+TOP_K_RETRIEVAL = 200                        # candidates sent to cross-encoder
+CROSS_ENCODER_MODEL = "BAAI/bge-reranker-v2-m3"
+CROSS_ENCODER_BATCH_SIZE = 8
+
+# Score blending weights (must sum to 1.0)
+W_CROSS      = 0.45
+W_SEMANTIC   = 0.35
+W_STRUCTURED = 0.20
 
 # ── Load artifacts ─────────────────────────────────────────────────
 print("Loading artifacts...")
 embs  = np.load(OUT / "candidate_baseline_embs.npy")
-jd    = np.load(OUT / "jd_baseline_emb.npy")
 ids   = json.load(open(OUT / "candidate_ids.json"))
-cands = json.load(open(OUT / "candidates_raw.json"))
 
-# ── Semantic scores ────────────────────────────────────────────────
-print("Computing semantic scores...")
-sem_scores = (embs @ jd.T).squeeze()  # (100000,)
+# Load candidates directly from JSONL (avoids 500MB+ intermediate JSON)
+cands = []
+with open("candidates.jsonl", "r", encoding="utf-8") as f:
+    for line in f:
+        if line.strip():
+            cands.append(json.loads(line))
+print(f"Loaded {len(cands)} candidates from candidates.jsonl")
+
+# Load section-wise JD embeddings and weights
+jd_sections = np.load(OUT / "jd_section_embs.npy")    # (N_sections, 384)
+jd_weights  = np.load(OUT / "jd_section_weights.npy")  # (N_sections,)
+
+# Load anti-pattern embedding (negative signal)
+jd_anti_emb = np.load(OUT / "jd_anti_pattern_emb.npy")  # (1, 384)
+
+with open(OUT / "jd_section_meta.json") as f:
+    jd_meta = json.load(f)
+
+print(f"JD sections loaded: {len(jd_meta['section_names'])}")
+for name, w in zip(jd_meta["section_names"], jd_weights):
+    print(f"  {name:25s} → {w:.3f}")
+print(f"Anti-pattern embedding loaded.")
+
+# ── Load cross-encoder model ──────────────────────────────────────
+print(f"\nLoading cross-encoder: {CROSS_ENCODER_MODEL}")
+t0_model = time.perf_counter()
+cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
+print(f"Cross-encoder loaded in {time.perf_counter() - t0_model:.1f}s")
+
+# ── Section-weighted semantic scores ───────────────────────────────
+# For each candidate, compute cosine similarity against EACH JD section,
+# then combine with importance weights.
+print("Computing section-weighted semantic scores...")
+
+# Positive signal: weighted sum of per-section similarities
+# (100000, N_sections) = (100000, 384) @ (384, N_sections)
+per_section_sims = embs @ jd_sections.T
+positive_sem_scores = per_section_sims @ jd_weights  # (100000,)
+
+# Negative signal: anti-pattern similarity as penalty multiplier
+# Higher anti_sim → candidate profile matches red-flag text → penalty
+anti_sims = (embs @ jd_anti_emb.T).squeeze()  # (100000,)
+anti_penalty = 1.0 - (anti_sims * 0.4)  # tune 0.4 later
+anti_penalty = np.clip(anti_penalty, 0.3, 1.0)  # floor at 0.3 to avoid zeroing out
+
+sem_scores = positive_sem_scores * anti_penalty
 
 # ── Constants ──────────────────────────────────────────────────────
 
@@ -42,15 +95,13 @@ ML_RELEVANT_TITLES = {
     "computer vision engineer",
     "senior software engineer (ml)", "software engineer (ml)",
     "staff ml engineer",
-    # Adjacent — legitimate but will score lower naturally
-    "software engineer", "senior software engineer",
-    "backend engineer", "data engineer", "senior data engineer",
-    "analytics engineer", "cloud engineer", "devops engineer",
 }
 
 CV_PRIMARY_SKILLS = {
     "cnn", "opencv", "yolo", "object detection", "image classification",
     "image segmentation", "computer vision",
+    "Image Segmentation", "Object Tracking", "Pose Estimation",
+    "Face Recognition", "OCR", "Depth Estimation",
 }
 
 NLP_IR_SKILLS = {
@@ -63,7 +114,41 @@ NLP_IR_SKILLS = {
 
 FRAMEWORK_ONLY_SKILLS = {"langchain", "llamaindex", "autogen", "crewai"}
 
+LANGCHAIN_PRIMARY_SIGNALS = {"LangChain", "LangGraph", "LlamaIndex"}
+
+DEEP_RETRIEVAL_SKILLS = {
+    "FAISS", "Pinecone", "Weaviate", "Qdrant", "Milvus",
+    "OpenSearch", "Elasticsearch", "Sentence Transformers",
+    "BM25", "Haystack", "Vector Search", "Semantic Search",
+    "Learning to Rank", "Information Retrieval", "pgvector"
+}
+
 TODAY = date.today()
+
+# ── JD query text for cross-encoder ────────────────────────────────
+JD_QUERY_TEXT = (
+    "Senior AI Engineer for founding team at Series A AI-native talent intelligence platform. "
+    "Own the intelligence layer: ranking, retrieval, and candidate-JD matching systems at scale. "
+    "Ship v2 ranking system with embeddings-based retrieval, hybrid search (dense + BM25), "
+    "and LLM-based re-ranking that demonstrably improves recruiter-engagement metrics. "
+    "Production experience with sentence-transformers, BGE, E5, or OpenAI embeddings "
+    "deployed to real users, handling embedding drift, index refresh, retrieval-quality regression. "
+    "Vector databases and hybrid search infrastructure: Pinecone, Weaviate, Qdrant, Milvus, "
+    "OpenSearch, Elasticsearch, FAISS, pgvector — operational experience matters. "
+    "Design evaluation frameworks for ranking: NDCG, MRR, MAP, offline-to-online correlation, "
+    "A/B test interpretation, recruiter-feedback loops. "
+    "Strong Python, code quality, async-first engineering culture. "
+    "5-9 years experience, 4-5 in applied ML/AI at product companies (not consulting/services). "
+    "Shipped end-to-end ranking, search, or recommendation system to real users at meaningful scale. "
+    "Strong opinions on hybrid vs dense retrieval, offline vs online evaluation, "
+    "LLM integration (fine-tune vs prompt). "
+    "Nice-to-have: LLM fine-tuning (LoRA, QLoRA, PEFT), learning-to-rank (XGBoost, neural), "
+    "HR-tech or marketplace product exposure, distributed systems, open-source contributions. "
+    "Not a fit: pure research without production deployment, framework-only experience "
+    "(LangChain/LlamaIndex without deep retrieval), career entirely at consulting firms, "
+    "primary expertise in computer vision/speech/robotics without NLP/IR depth."
+)
+
 
 # ── Honeypot detection ─────────────────────────────────────────────
 def is_honeypot(c):
@@ -119,31 +204,79 @@ def is_honeypot(c):
     return flags >= 1
 
 
-def score_candidate(idx):
-    c   = cands[idx]
+JD_PRIORITY_SKILLS = {
+    "faiss", "pinecone", "weaviate", "qdrant", "milvus",
+    "opensearch", "elasticsearch", "bm25", "vector search",
+    "semantic search", "sentence transformers", "information retrieval",
+    "learning to rank", "ranking systems", "search & discovery",
+    "hybrid search", "retrieval", "embeddings", "pgvector",
+    "haystack", "rag", "content matching", "vector representations"
+}
+
+def build_rerank_text(c):
+    p = c["profile"]
+    parts = []
+
+    title = p.get("current_title", "")
+    company = p.get("current_company", "")
+    yoe = p.get("years_of_experience", 0)
+    if title or company:
+        parts.append(f"{title} at {company}, {yoe} years experience.")
+
+    skills_all = c.get("skills", [])
+    
+    # Split into JD-priority vs rest
+    priority_skills = [
+        s for s in skills_all
+        if s["name"].lower() in JD_PRIORITY_SKILLS
+    ]
+    other_skills = [
+        s for s in skills_all
+        if s["name"].lower() not in JD_PRIORITY_SKILLS
+    ]
+
+    # Sort each group by proficiency then duration
+    def sort_key(s):
+        return (
+            {"expert": 0, "advanced": 1, "intermediate": 2, "beginner": 3}
+            .get(s.get("proficiency", "beginner"), 4),
+            -s.get("duration_months", 0)
+        )
+
+    priority_skills.sort(key=sort_key)
+    other_skills.sort(key=sort_key)
+
+    # Priority skills first, then fill up to 12 total
+    ordered = priority_skills + other_skills
+    top_skills = ordered[:12]
+
+    skill_parts = [
+        f"{s['name']} ({s['proficiency']}, {s.get('duration_months',0)}mo)"
+        for s in top_skills
+    ]
+    if skill_parts:
+        parts.append(f"Skills: {', '.join(skill_parts)}.")
+
+    summary = p.get("summary", "")
+    if summary:
+        parts.append(f"Summary: {summary[:400]}.")
+
+    history = c.get("career_history", [])
+    for job in history[:3]:
+        desc = job.get("description", "")[:200]
+        parts.append(
+            f"{job.get('title','')} at {job.get('company','')} "
+            f"({job.get('duration_months',0)}mo): {desc}."
+        )
+
+    return " ".join(parts)
+
+
+def compute_multiplier(c):
+    """Compute the multiplier for a candidate (extracted for reuse)."""
     p   = c["profile"]
     sig = c["redrob_signals"]
-
-    # Define these once at the top — used in multiple places below
-    title   = p.get("current_title", "").lower().strip()
     country = p.get("country", "India")
-
-    # Honeypot check
-    if is_honeypot(c):
-        return 0.0
-
-    # ── Hard gates ─────────────────────────────────────────────────
-    if not sig["open_to_work_flag"]:
-        return 0.0
-
-    if country != "India" and not sig.get("willing_to_relocate", False):
-        return 0.0
-
-    # Title whitelist
-    if title not in ML_RELEVANT_TITLES:
-        return 0.0
-
-    # ── Multipliers ────────────────────────────────────────────────
     multiplier = 1.0
 
     # Consulting fraction
@@ -160,7 +293,7 @@ def score_candidate(idx):
     cf = consulting_fraction(c.get("career_history", []))
     if   cf >= 0.80: multiplier *= 0.45
     elif cf >= 0.50: multiplier *= 0.70
-    elif cf >= 0.30: multiplier *= 0.85
+    elif cf >= 0.20: multiplier *= 0.85  # was 0.30 — 20% consulting career is meaningful
 
     # Recency
     last_active   = datetime.strptime(sig["last_active_date"], "%Y-%m-%d").date()
@@ -172,15 +305,24 @@ def score_candidate(idx):
     if country != "India" and sig.get("willing_to_relocate", False):
         multiplier *= 0.75
 
-    # CV-primary penalty
+    # CV-primary penalty (duration >= 36mo to count as CV-primary)
+    cv_skills = [
+        s for s in c.get("skills", [])
+        if s["name"].lower() in CV_PRIMARY_SKILLS
+        and s["proficiency"] in ("advanced", "expert")
+        and s.get("duration_months", 0) >= 36
+    ]
+    cv_count = len(cv_skills)
     cand_advanced = {s["name"].lower() for s in c["skills"]
                      if s["proficiency"] == "advanced"}
-    cv_count  = sum(1 for sk in cand_advanced if sk in CV_PRIMARY_SKILLS)
     nlp_count = sum(1 for sk in cand_advanced if sk in NLP_IR_SKILLS)
 
-    if   cv_count >= 2 and nlp_count == 0:              multiplier *= 0.40
-    elif cv_count >= 2 and cv_count > nlp_count + 1:    multiplier *= 0.60
-    elif cv_count > nlp_count:                          multiplier *= 0.70
+    if   cv_count >= 2 and nlp_count == 0:
+        multiplier *= 0.40
+    elif cv_count >= 2 and cv_count > nlp_count + 1:
+        multiplier *= 0.60
+    elif cv_count > nlp_count:
+        multiplier *= 0.70
 
     # Framework enthusiast penalty
     cand_all_skills  = {s["name"].lower() for s in c["skills"]}
@@ -197,8 +339,36 @@ def score_candidate(idx):
     if first_advanced in FRAMEWORK_ONLY_SKILLS:
         multiplier *= 0.75
 
-    # ── Component scores ───────────────────────────────────────────
-    sem = float(sem_scores[idx])
+    # Context-aware LangChain penalty — only fires if retrieval depth is shallow
+    langchain_count = sum(
+        1 for s in c.get("skills", [])
+        if s["name"] in LANGCHAIN_PRIMARY_SIGNALS
+        and s["proficiency"] in ("advanced", "expert")
+    )
+    retrieval_count = sum(
+        1 for s in c.get("skills", [])
+        if s["name"] in DEEP_RETRIEVAL_SKILLS
+        and s["proficiency"] in ("advanced", "expert")
+    )
+
+    # Only penalize if LangChain dominates and retrieval is shallow
+    if langchain_count >= 1 and retrieval_count == 0:
+        multiplier *= 0.45   # pure framework person, no retrieval depth
+    elif langchain_count >= 1 and retrieval_count <= 1:
+        multiplier *= 0.70   # some retrieval but framework-heavy
+    # else: has LangChain BUT also has real retrieval depth → no penalty
+
+    return multiplier
+
+
+def compute_structured_scores(idx):
+    """Compute the structured component scores for a candidate.
+
+    Returns a dict of individual scores and the combined structured score.
+    """
+    c   = cands[idx]
+    p   = c["profile"]
+    sig = c["redrob_signals"]
 
     yoe = p.get("years_of_experience", 0)
     if   5 <= yoe <= 9:   exp = 1.00
@@ -219,6 +389,8 @@ def score_candidate(idx):
     if oar < 0: oar = 0.5
     engagement = 0.45 * rr + 0.35 * icr + 0.20 * oar
 
+    last_active   = datetime.strptime(sig["last_active_date"], "%Y-%m-%d").date()
+    days_inactive = (TODAY - last_active).days
     recency  = float(np.exp(-days_inactive / 60))
 
     gh       = sig.get("github_activity_score", -1)
@@ -233,41 +405,157 @@ def score_candidate(idx):
     )
     credibility = max(0.0, 1.0 - penalties * 0.20)
 
-    # ── Composite ──────────────────────────────────────────────────
-    score = (
-        0.35 * sem         +
-        0.15 * exp         +
-        0.15 * notice_s    +
-        0.15 * engagement  +
-        0.10 * recency     +
-        0.05 * github_s    +
-        0.05 * credibility
+    # Weighted combination matching original relative weights
+    # Original: exp=0.15, notice=0.08, engagement=0.08, recency=0.09,
+    #           github=0.05, credibility=0.05  (sum=0.50)
+    # Normalize to sum to 1.0 for the structured component
+    structured = (
+        0.30 * exp +
+        0.16 * notice_s +
+        0.16 * engagement +
+        0.18 * recency +
+        0.10 * github_s +
+        0.10 * credibility
     )
 
-    return score * multiplier
+    return {
+        "experience_fit": exp,
+        "notice_period_score": notice_s,
+        "engagement_score": engagement,
+        "recency_score": recency,
+        "github_score": github_s,
+        "assessment_credibility": credibility,
+        "structured_combined": structured,
+    }
 
-# ── Score all candidates ───────────────────────────────────────────
-print("Scoring 100K candidates...")
-final_scores = np.array([
-    score_candidate(i) for i in range(len(cands))
-])
 
-zeroed = (final_scores == 0.0).sum()
-print(f"Zeroed out: {zeroed:,} / {len(cands):,} "
-      f"({100 * zeroed / len(cands):.1f}%)")
+def passes_hard_gates(idx):
+    """Check if candidate passes all hard gates. Returns True if passes."""
+    c   = cands[idx]
+    p   = c["profile"]
+    sig = c["redrob_signals"]
+    title   = p.get("current_title", "").lower().strip()
+    country = p.get("country", "India")
 
-active_scores = final_scores[final_scores > 0]
-print(f"Active candidates: {len(active_scores):,}")
-print(f"Score range: {active_scores.min():.4f} → {active_scores.max():.4f}")
-print(f"Score mean:  {active_scores.mean():.4f}")
+    if is_honeypot(c):
+        return False
+    if not sig["open_to_work_flag"]:
+        return False
+    if country != "India" and not sig.get("willing_to_relocate", False):
+        return False
+    if title not in ML_RELEVANT_TITLES:
+        return False
+    return True
+
+
+# ── Phase 1: Initial retrieval + hard gate filtering ───────────────
+t_total_start = time.perf_counter()
+t_retrieval_start = time.perf_counter()
+
+print("\n── Phase 1: Retrieval + Hard Gate Filtering ──")
+
+# Get initial ranking by semantic score
+initial_ranking = np.argsort(sem_scores)[::-1]
+
+# Filter through hard gates and collect Top-K
+topk_indices = []
+for idx in initial_ranking:
+    if passes_hard_gates(idx):
+        topk_indices.append(idx)
+    if len(topk_indices) >= TOP_K_RETRIEVAL:
+        break
+
+topk_indices = np.array(topk_indices)
+t_retrieval = time.perf_counter() - t_retrieval_start
+print(f"Retrieved {len(topk_indices)} candidates passing hard gates "
+      f"(from {len(cands):,} total)")
+print(f"Retrieval time: {t_retrieval:.2f}s")
+
+# ── Phase 2: Cross-encoder reranking ──────────────────────────────
+t_rerank_start = time.perf_counter()
+print(f"\n── Phase 2: Cross-Encoder Reranking ({len(topk_indices)} candidates) ──")
+
+# Build candidate texts for reranking
+rerank_texts = [build_rerank_text(cands[idx]) for idx in topk_indices]
+
+# Build query-document pairs for cross-encoder
+pairs = [[JD_QUERY_TEXT, text] for text in rerank_texts]
+
+# Batch inference
+print(f"Running cross-encoder inference (batch_size={CROSS_ENCODER_BATCH_SIZE})...")
+raw_cross_scores = cross_encoder.predict(
+    pairs,
+    batch_size=CROSS_ENCODER_BATCH_SIZE,
+    show_progress_bar=True,
+    max_length=512,
+)
+raw_cross_scores = np.array(raw_cross_scores, dtype=np.float64)
+
+# Normalize cross-encoder scores to [0, 1] via sigmoid
+# Sigmoid maps logits naturally to [0,1], preserves relative differences,
+# and doesn't let one outlier steal the 1.0 slot (unlike min-max).
+norm_cross_scores = 1.0 / (1.0 + np.exp(-raw_cross_scores))
+
+t_rerank = time.perf_counter() - t_rerank_start
+print(f"Reranking time: {t_rerank:.2f}s  "
+      f"({len(topk_indices) / t_rerank:.0f} candidates/sec)")
+print(f"Cross-encoder raw score range: [{raw_cross_scores.min():.4f}, {raw_cross_scores.max():.4f}]")
+print(f"Sigmoid-normalized score range: [{norm_cross_scores.min():.4f}, {norm_cross_scores.max():.4f}]")
+
+# ── Phase 3: Score blending ────────────────────────────────────────
+print(f"\n── Phase 3: Score Blending ──")
+print(f"Weights: cross={W_CROSS}, semantic={W_SEMANTIC}, structured={W_STRUCTURED}")
+
+final_scores_topk = np.zeros(len(topk_indices))
+diagnostics = []
+
+for i, idx in enumerate(topk_indices):
+    c = cands[idx]
+
+    # Semantic component (already computed)
+    semantic = float(sem_scores[idx])
+
+    # Structured component
+    struct_info = compute_structured_scores(idx)
+    structured = struct_info["structured_combined"]
+
+    # Cross-encoder component (already normalized)
+    cross_score = float(norm_cross_scores[i])
+
+    # Multiplier (existing logic preserved)
+    multiplier = compute_multiplier(c)
+
+    # Blended score
+    blended = (
+        W_CROSS      * cross_score +
+        W_SEMANTIC   * semantic    +
+        W_STRUCTURED * structured
+    )
+    final = blended * multiplier
+
+    final_scores_topk[i] = final
+
+    # Store diagnostics
+    diagnostics.append({
+        "candidate_id": ids[idx],
+        "semantic_score": round(semantic, 4),
+        "cross_encoder_score": round(cross_score, 4),
+        "cross_encoder_raw": round(float(raw_cross_scores[i]), 4),
+        "structured_score": round(structured, 4),
+        "multiplier": round(multiplier, 4),
+        "final_score": round(final, 4),
+        **{k: round(v, 4) for k, v in struct_info.items()
+           if k != "structured_combined"},
+    })
 
 # ── Top 100 ────────────────────────────────────────────────────────
-top100_idx = np.argsort(final_scores)[::-1][:100]
+top100_order = np.argsort(final_scores_topk)[::-1][:100]
+top100_idx_global = topk_indices[top100_order]
 
 # ── Honeypot check on top 100 ──────────────────────────────────────
 # Submission is disqualified if >10 honeypots in top 100
 honeypot_in_top100 = sum(
-    1 for idx in top100_idx if is_honeypot(cands[idx])
+    1 for idx in top100_idx_global if is_honeypot(cands[idx])
 )
 print(f"\nHoneypots in top 100: {honeypot_in_top100} "
       f"({'⚠️  RISK' if honeypot_in_top100 > 5 else '✅ OK'})")
@@ -308,17 +596,48 @@ def make_reasoning(c, rank):
 
 # ── Build submission CSV ────────────────────────────────────────────
 rows = []
-for rank, idx in enumerate(top100_idx, 1):
+for rank, order_idx in enumerate(top100_order, 1):
+    global_idx = topk_indices[order_idx]
     rows.append({
-        "candidate_id": ids[idx],
+        "candidate_id": ids[global_idx],
         "rank":         rank,
-        "score":        round(final_scores[idx], 4),
-        "reasoning":    make_reasoning(cands[idx], rank)
+        "score":        round(final_scores_topk[order_idx], 4),
+        "reasoning":    make_reasoning(cands[global_idx], rank)
     })
 
 df = pd.DataFrame(rows)
-df.to_csv("submission.csv", index=False)
+df.to_csv("submission_new.csv", index=False)
 
+# ── Diagnostics CSV ────────────────────────────────────────────────
+diag_df = pd.DataFrame(diagnostics)
+# Sort by final_score descending
+diag_df = diag_df.sort_values("final_score", ascending=False).reset_index(drop=True)
+diag_df.insert(0, "rank", range(1, len(diag_df) + 1))
+diag_df.to_csv("diagnostics.csv", index=False)
+print(f"\nDiagnostics saved → diagnostics.csv ({len(diag_df)} rows)")
+
+# ── Performance summary ───────────────────────────────────────────
+t_total = time.perf_counter() - t_total_start
+print(f"\n{'='*60}")
+print(f"PERFORMANCE SUMMARY")
+print(f"{'='*60}")
+print(f"  Retrieval time:      {t_retrieval:>7.2f}s")
+print(f"  Reranking time:      {t_rerank:>7.2f}s")
+print(f"  Total ranking time:  {t_total:>7.2f}s")
+print(f"  Candidates/sec:      {len(topk_indices) / t_rerank:>7.0f}")
+print(f"  Top-K retrieved:     {len(topk_indices):>7d}")
+print(f"{'='*60}")
+
+# ── Final output ──────────────────────────────────────────────────
 print("\n=== TOP 10 FINAL RANKING ===")
 print(df.head(10).to_string(index=False))
-print(f"\nSubmission saved → submission.csv ({len(df)} rows)")
+
+# Show top-10 diagnostics
+print("\n=== TOP 10 DIAGNOSTICS ===")
+diag_top10 = diag_df.head(10)[[
+    "rank", "candidate_id", "semantic_score", "cross_encoder_score",
+    "structured_score", "multiplier", "final_score"
+]]
+print(diag_top10.to_string(index=False))
+
+print(f"\nSubmission saved → submission_new.csv ({len(df)} rows)")
