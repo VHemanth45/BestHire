@@ -114,10 +114,11 @@ JD_SECTIONS = {
 # ── 2. Load model ─────────────────────────────────────────────────
 print("Loading model...")
 model = SentenceTransformer('BAAI/bge-small-en-v1.5')
+model.save(str(OUT / 'bge-small-en-v1.5'))
 
-print("Pre-caching cross-encoder...")
-CrossEncoder("BAAI/bge-reranker-v2-m3")
-print("Cross-encoder cached.")
+print("Loading CrossEncoder for offline usage in rank.py...")
+cross_model = CrossEncoder('BAAI/bge-reranker-v2-m3')
+cross_model.save(str(OUT / 'bge-reranker-v2-m3'))
 
 # ── 3. Embed JD sections ──────────────────────────────────────────
 print(f"Embedding {len(JD_SECTIONS)} JD sections...")
