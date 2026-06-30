@@ -1,0 +1,29 @@
+{
+  "section_names": [
+    "must_have_skills",
+    "role_mandate",
+    "core_identity",
+    "nice_to_have",
+    "experience_profile",
+    "logistics",
+    "culture_fit"
+  ],
+  "section_weights": [
+    0.32608696818351746,
+    0.21739129722118378,
+    0.16304348409175873,
+    0.10869564861059189,
+    0.10869564861059189,
+    0.043478257954120636,
+    0.032608695328235626
+  ],
+  "section_texts": [
+    "Things you absolutely need: Production experience with embeddings-based retrieval systems (sentence-transformers, OpenAI embeddings, BGE, E5, or similar) deployed to real users. Handled embedding drift, index refresh, retrieval-quality regression in production. Production experience with vector databases or hybrid search infrastructure \u2014 Pinecone, Weaviate, Qdrant, Milvus, OpenSearch, Elasticsearch, FAISS, or something similar. Operational experience matters. Strong Python with high code quality. Hands-on experience designing evaluation frameworks for ranking systems \u2014 NDCG, MRR, MAP, offline-to-online correlation, A/B test interpretation.",
+    "Own the intelligence layer of a talent platform. Ranking, retrieval, and matching systems that decide what recruiters see when they search for candidates. Ship a v2 ranking system with embeddings, hybrid retrieval, and LLM-based re-ranking. Set up evaluation infrastructure \u2014 offline benchmarks, online A/B testing, recruiter-feedback loops. Drive long-term architecture of candidate-JD matching at scale.",
+    "Deep technical depth in modern ML systems \u2014 embeddings, retrieval, ranking, LLMs, fine-tuning. Scrappy product-engineering attitude \u2014 willing to ship a working ranker in a week even if suboptimal, learning from real users. Shipped end-to-end ranking, search, or recommendation system to real users at meaningful scale. Strong opinions about retrieval (hybrid vs dense), evaluation (offline vs online), and LLM integration (when to fine-tune vs prompt).",
+    "LLM fine-tuning experience (LoRA, QLoRA, PEFT). Experience with learning-to-rank models (XGBoost-based or neural). Prior exposure to HR-tech, recruiting tech, or marketplace products. Background in distributed systems or large-scale inference optimization. Open-source contributions in the AI/ML space.",
+    "5-9 years experience, ideally 6-8 years total with 4-5 in applied ML/AI roles at product companies, not pure services. Must have production deployment experience, not purely research. Must have written production code in the last 18 months. Pre-LLM-era ML production experience valued over recent LangChain-only projects.",
+    "Location: Pune or Noida preferred. Offices used Tuesday/Thursday. Candidates in Hyderabad, Mumbai, Delhi NCR welcome. Quarterly travel for offsites. Sub-30-day notice period preferred, can buy out up to 30 days. Outside India case-by-case, no work visa sponsorship.",
+    "Async-first communication, writes extensively. Disagrees openly and decides quickly. Moves fast, comfortable with unstable codebase. Plans to stay 3+ years, not optimizing for title progression."
+  ]
+}
