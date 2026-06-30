@@ -1,0 +1,94 @@
+# Redrob Hackathon — Submission Metadata Template
+#
+# Copy this file to your repo root as `submission_metadata.yaml` and fill it in.
+# The fields here should match what you submit via the portal at upload time.
+# Stage 3 review uses this file to verify your portal metadata.
+
+# ============================================================================
+# Team identity
+# ============================================================================
+team_name: "Errors"  # Used in leaderboard and announcements
+
+primary_contact:
+  name: "Hemanth Vankudoth"
+  email: "vhemanthnaik45@gmail.com"   # Used for all organizer communication
+  phone: "+91-9550106040"        # Used for top-50 / top-10 outreach
+
+team_members:
+  - name: "Hemanth Vankudoth"
+    email: "vhemanthnaik45@gmail.com"
+    role: "ML Engineer"          
+  - name: "Anjali Roy"
+    email: "member2@example.com"
+    role: "ML Engineer"
+  # Add more members as needed; solo participants list just one member
+
+# ============================================================================
+# Code and reproducibility
+# ============================================================================
+github_repo: "https://github.com/VHemanth45/BestHire"
+# Required. Must be reachable. Private repos OK if you can grant organizer
+# access at Stage 3 (the email to add will be communicated then).
+
+sandbox_link: "https://huggingface.co/spaces/YOUR_USERNAME/redrob-ranker"
+# Required. A working hosted environment where the ranker can be run on a small
+# candidate sample. See Section 10.5 of submission_spec.md for acceptable
+# platforms (HuggingFace Spaces, Streamlit Cloud, Replit, Colab, Docker, Binder).
+
+reproduce_command: "python rank.py"
+# The single command that produces submission.csv from candidates.jsonl.
+# Should run end-to-end within 5 minutes on CPU with 16GB RAM and no network.
+
+# ============================================================================
+# Compute environment
+# ============================================================================
+compute:
+  platform: "Local Linux box"                   # Or: "AWS EC2 c5.4xlarge", "Local Linux box", etc.
+  cpu_cores: 20                                 # Number of CPU cores used
+  ram_gb: 15                                    # Available RAM in GB
+  python_version: "3.14.6"                      # python --version
+  os: "Fedora Linux 44"                         # Or "Ubuntu 22.04 LTS", etc.
+  uses_gpu_for_inference: false                 # Must be false — see compute constraints
+  has_network_during_ranking: false             # Must be false — no API calls during ranking
+  pre_computation_required: true                # true if you pre-compute embeddings or train models offline
+  pre_computation_time_minutes: 5               # Approximate, if applicable
+
+# ============================================================================
+# AI tools declaration
+# ============================================================================
+# Transparency only — declared use is NOT penalized. Be honest. Stage 5 interview
+# may verify these declarations against your code; declarations that contradict
+# your code or your interview are flagged.
+ai_tools_used:
+  - "Claude"
+  - "Claude_code"
+  - "GitHub Copilot"
+  - "Antigravity"
+  - "ChatGPT"
+
+ai_usage_summary: |
+  - Claude & ChatGPT: Used for brainstorming and understanding architectural trade-offs.
+  - GitHub Copilot & Antigravity: Used for autocomplete and inline code suggestions.
+  - Claude Code: Used extensively for core coding and debugging tasks.
+
+# ============================================================================
+# Approach summary (optional but recommended)
+# ============================================================================
+methodology_summary: |
+  Our ranking engine uses a 3-stage hybrid architecture designed to aggressively filter out keyword stuffers and favor deep production experience. 
+  
+  1. Hard Gates & Initial Retrieval (35%): First, we drop honeypots and non-ML titles. Then we compute semantic scores via weighted JD-section embeddings, while penalizing anti-pattern matches.
+  2. Cross-Encoder Reranking (45%): We rerank top candidates using a BAAI/bge-reranker-v2-m3 cross-encoder. It scores a synthesized profile (top skills, title, summary, work history) against our nuanced JD text, catching subtle contextual matches.
+  3. Structured Signals (20%): We combine years of experience, notice period, recruiter engagement rates, recency, and assessment credibility.
+  
+  Finally, a robust multiplier actively penalizes heavily consulting-based careers, exclusively framework-driven engineers lacking deep retrieval knowledge, and suspicious CV-primary claimers.
+
+# ============================================================================
+# Declarations
+# ============================================================================
+declarations:
+  read_submission_spec: true        # I have read submission_spec.md in full
+  code_is_original_work: true       # My code is my team's original work (using AI as a tool is fine)
+  no_collusion: true                # I have not coordinated my submission with other teams
+  honeypot_check_done: false        # OPTIONAL — set true if you explicitly checked for honeypots in your ranking
+  reproduction_tested: true         # I have tested that my reproduce_command runs end-to-end
