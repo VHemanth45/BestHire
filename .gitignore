@@ -11,3 +11,5 @@ wheels/
 candidates.jsonl
 artifacts/
 *.npy
+diagnostics.csv
+

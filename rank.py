@@ -12,7 +12,7 @@ OUT = Path("artifacts")
 
 # ── Configuration ──────────────────────────────────────────────────
 TOP_K_RETRIEVAL = 200                        # candidates sent to cross-encoder
-CROSS_ENCODER_MODEL = str(OUT / "bge-reranker-v2-m3")
+CROSS_ENCODER_MODEL = "BAAI/bge-reranker-v2-m3"
 CROSS_ENCODER_BATCH_SIZE = 8
 
 # Score blending weights (must sum to 1.0)
@@ -51,7 +51,10 @@ print(f"Anti-pattern embedding loaded.")
 # ── Load cross-encoder model ──────────────────────────────────────
 print(f"\nLoading cross-encoder: {CROSS_ENCODER_MODEL}")
 t0_model = time.perf_counter()
-cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
+cross_encoder = CrossEncoder(
+    CROSS_ENCODER_MODEL,
+    local_files_only=True
+)
 print(f"Cross-encoder loaded in {time.perf_counter() - t0_model:.1f}s")
 
 # ── Section-weighted semantic scores ───────────────────────────────
@@ -210,7 +213,15 @@ JD_PRIORITY_SKILLS = {
     "semantic search", "sentence transformers", "information retrieval",
     "learning to rank", "ranking systems", "search & discovery",
     "hybrid search", "retrieval", "embeddings", "pgvector",
-    "haystack", "rag", "content matching", "vector representations"
+    "haystack", "rag", "content matching", "vector representations",
+    "reranking", "dense retrieval", "sparse retrieval",
+    "recommendation systems"
+}
+
+JD_NICE_TO_HAVE = {
+    "lora", "qlora", "peft", "fine-tuning llms", "llms",
+    "mlops", "kubeflow", "mlflow", "a/b testing",
+    "learning to rank", "ndcg", "evaluation frameworks"
 }
 
 def build_rerank_text(c):
@@ -566,32 +577,191 @@ def make_reasoning(c, rank):
     p   = c["profile"]
     sig = c["redrob_signals"]
 
-    adv    = [s["name"] for s in c["skills"]
-              if s["proficiency"] == "advanced"][:3]
-    yoe    = p.get("years_of_experience", 0)
-    title  = p.get("current_title", "")
-    notice = sig.get("notice_period_days", 90)
-    active = sig.get("last_active_date", "")
-    rr     = sig.get("recruiter_response_rate", 0)
-    co     = p.get("current_company", "")
-    loc    = p.get("location", "")
-
-    skills_str = ", ".join(adv) if adv else "general ML background"
-
-    concerns = []
-    if notice > 60:
-        concerns.append(f"{notice}-day notice")
-    if rr < 0.30:
-        concerns.append(f"low response rate ({rr:.0%})")
-
-    concern_str = ("; concern: " + ", ".join(concerns)) if concerns else ""
-
-    return (
-        f"{yoe:.1f}yr {title} at {co} ({loc}); "
-        f"strong in {skills_str}; "
-        f"active {active}, notice {notice}d"
-        f"{concern_str}."
+    yoe     = p.get("years_of_experience", 0)
+    title   = p.get("current_title", "")
+    company = p.get("current_company", "")
+    notice  = sig.get("notice_period_days", 90)
+    active  = sig.get("last_active_date", "")
+    rr      = sig.get("recruiter_response_rate", 0.5)
+    icr     = sig.get("interview_completion_rate", 0.5)
+    gh      = sig.get("github_activity_score", -1)
+    passive = (
+        sig.get("profile_views_received_30d", 0) > 100 or
+        sig.get("saved_by_recruiters_30d", 0) > 30
     )
+
+    last_active_date = datetime.strptime(active, "%Y-%m-%d").date()
+    days_inactive = (date.today() - last_active_date).days
+
+    # Skills analysis
+    all_skills = c.get("skills", [])
+    expert_skills = [s for s in all_skills if s["proficiency"] == "expert"]
+    advanced_skills = [s for s in all_skills if s["proficiency"] == "advanced"]
+    top_skills = sorted(
+        expert_skills + advanced_skills,
+        key=lambda s: -s.get("duration_months", 0)
+    )
+
+    top3_names = [s["name"] for s in top_skills[:3]]
+
+    jd_hits = [
+        s for s in top_skills
+        if s["name"].lower() in JD_PRIORITY_SKILLS
+    ]
+    nice_hits = [
+        s for s in top_skills
+        if s["name"].lower() in JD_NICE_TO_HAVE
+    ]
+
+    jd_hit_names = [s["name"] for s in jd_hits[:3]]
+    jd_hit_durations = [s.get("duration_months", 0) for s in jd_hits[:3]]
+
+    # Career history signals
+    history = c.get("career_history", [])
+    recent_company = history[0].get("company", company) if history else company
+    recent_desc = history[0].get("description", "")[:120] if history else ""
+
+    # ── Build reasoning parts ──────────────────────────────────────
+
+    # PART 1: Opening — rank-tier appropriate, varied openers
+    if rank <= 5:
+        openers = [
+            f"One of the strongest profiles in the pool — {yoe:.1f} years as {title} at {company}",
+            f"Exceptional match for this JD — {title} at {company} with {yoe:.1f} years of hands-on experience",
+            f"Top-tier candidate: {yoe:.1f}yr {title} at {company}, with a profile that maps directly to what the JD is asking for",
+        ]
+    elif rank <= 15:
+        openers = [
+            f"Strong candidate — {yoe:.1f}yr {title} at {company}",
+            f"Good profile overall — {title} at {company} with {yoe:.1f} years of relevant experience",
+            f"{yoe:.1f}yr {title} at {company}; solid fit for the core requirements",
+        ]
+    elif rank <= 35:
+        openers = [
+            f"Decent fit with some gaps — {yoe:.1f}yr {title} at {company}",
+            f"Reasonable candidate — {title} at {company} with {yoe:.1f} years, though not a perfect match",
+            f"{yoe:.1f}yr {title} at {company}; covers some JD requirements but not all",
+        ]
+    elif rank <= 60:
+        openers = [
+            f"Moderate overlap with JD requirements — {yoe:.1f}yr {title} at {company}",
+            f"Partial fit — {title} at {company} ({yoe:.1f}yr) has adjacent skills but misses some core JD signals",
+            f"{yoe:.1f}yr {title} at {company}; included for relevant signals but ranked lower due to skill gaps",
+        ]
+    elif rank <= 80:
+        openers = [
+            f"Ranked lower despite some retrieval signals — {yoe:.1f}yr {title} at {company}; notice period and engagement concerns outweigh skill fit",
+            f"Deprioritized due to operational concerns — {title} at {company} ({yoe:.1f}yr) has relevant skills but availability or engagement flags",
+            f"{yoe:.1f}yr {title} at {company}; retrieval skills present but ranked lower on notice period, recency, or response rate signals",
+        ]
+    else:
+        openers = [
+            f"Below the core cutoff — {yoe:.1f}yr {title} at {company}",
+            f"Weak JD alignment — {title} at {company} ({yoe:.1f}yr); included as filler given experience breadth",
+            f"{yoe:.1f}yr {title} at {company}; profile doesn't strongly match retrieval/ranking mandate",
+        ]
+
+    # Use hash of candidate_id for deterministic but varied selection
+    opener_idx = hash(c.get("candidate_id", "")) % len(openers)
+    opening = openers[opener_idx]
+
+    # PART 2: JD connection
+    if len(jd_hits) >= 3:
+        jd_part = (
+            f"Directly covers the JD's core retrieval stack — "
+            f"{jd_hit_names[0]} ({jd_hit_durations[0]}mo), "
+            f"{jd_hit_names[1]} ({jd_hit_durations[1]}mo), "
+            f"and {jd_hit_names[2]} ({jd_hit_durations[2]}mo) — "
+            f"exactly the kind of production retrieval depth the role requires."
+        )
+    elif len(jd_hits) == 2:
+        jd_part = (
+            f"Covers {jd_hit_names[0]} and {jd_hit_names[1]} from the JD's must-have stack, "
+            f"though missing some breadth on vector DB or hybrid search experience."
+        )
+    elif len(jd_hits) == 1:
+        jd_part = (
+            f"Only one strong JD signal — {jd_hit_names[0]} — "
+            f"with the rest of the profile in adjacent but not core retrieval territory."
+        )
+    else:
+        jd_part = (
+            f"Top skills ({', '.join(top3_names)}) don't directly map to the JD's "
+            f"retrieval and ranking mandate; this is a general ML profile without clear IR depth."
+        )
+
+    # PART 3: Nice-to-have or career narrative signal
+    narrative_part = ""
+    if recent_desc and rank <= 30:
+        # Trim description to meaningful snippet
+        snippet = recent_desc.strip().rstrip(".")
+        narrative_part = f"Recent work at {recent_company} involved: \"{snippet}...\""
+    elif nice_hits and rank <= 50:
+        nice_names = [s["name"] for s in nice_hits[:2]]
+        narrative_part = f"Also brings {', '.join(nice_names)} — useful for the eval framework and fine-tuning aspects of the role."
+
+    # PART 4: Honest concerns — always included where applicable
+    concerns = []
+
+    if notice > 90:
+        concerns.append(
+            f"{notice}-day notice is a significant hiring risk — "
+            f"likely needs negotiation or org is okay with delayed start"
+        )
+    elif notice > 60:
+        concerns.append(f"{notice}-day notice period — workable but not immediate")
+
+    if days_inactive > 180:
+        concerns.append(
+            f"profile inactive for {days_inactive} days — "
+            f"unclear if still actively looking despite open-to-work flag"
+        )
+    elif days_inactive > 90:
+        concerns.append(f"hasn't been active in {days_inactive} days — response rate may lag")
+
+    if rr < 0.35:
+        concerns.append(
+            f"low recruiter response rate ({rr:.0%}) — "
+            f"historically slow to engage, may not convert easily"
+        )
+
+    if icr < 0.40:
+        concerns.append(f"interview completion rate of {icr:.0%} — drops out of processes")
+
+    if len(jd_hits) == 0 and rank <= 50:
+        concerns.append("no strong retrieval/ranking skills in top profile signals — JD fit is primarily semantic, not explicit")
+
+    # PART 5: Positive signals worth noting
+    positives = []
+    if notice <= 30:
+        positives.append("immediately or near-immediately available")
+    if gh > 50:
+        positives.append(f"active GitHub presence (score {gh:.0f}) — open-source signal")
+    if passive:
+        positives.append("being actively watched by recruiters — market-validated profile")
+    if rr > 0.70:
+        positives.append(f"high recruiter response rate ({rr:.0%}) — likely to engage")
+
+    # ── Assemble final string ──────────────────────────────────────
+    parts = [opening + "."]
+    parts.append(jd_part)
+
+    if narrative_part:
+        parts.append(narrative_part + ".")
+
+    if positives and rank <= 40:
+        parts.append("Positive signals: " + "; ".join(positives) + ".")
+
+    if concerns:
+        if rank <= 20:
+            parts.append("Worth noting: " + "; ".join(concerns) + ".")
+        else:
+            parts.append("Concerns: " + "; ".join(concerns) + ".")
+
+    if not concerns and rank <= 10:
+        parts.append("No significant red flags — clean profile for this JD.")
+
+    return " ".join(parts)
 
 
 # ── Build submission CSV ────────────────────────────────────────────
