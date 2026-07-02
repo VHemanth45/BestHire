@@ -122,8 +122,8 @@ model = SentenceTransformer('BAAI/bge-small-en-v1.5', device=DEVICE)
 model.save(str(OUT / 'bge-small-en-v1.5'))
 
 print("Loading CrossEncoder for offline usage in rank.py...")
-cross_model = CrossEncoder('BAAI/bge-reranker-v2-m3', device=DEVICE)
-cross_model.save(str(OUT / 'bge-reranker-v2-m3'))
+cross_model = CrossEncoder('BAAI/bge-reranker-base', device=DEVICE)
+cross_model.save(str(OUT / 'bge-reranker-base'))
 
 # ── 3. Embed JD sections ──────────────────────────────────────────
 print(f"Embedding {len(JD_SECTIONS)} JD sections...")

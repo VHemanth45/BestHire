@@ -7,7 +7,7 @@ This repository contains our team's submission for the Redrob Hackathon: Intelli
 Our ranking engine utilizes a 3-stage hybrid architecture designed to aggressively filter out keyword stuffers and favor deep production experience over superficial keyword matching:
 
 1. **Hard Gates & Initial Retrieval (35%)**: We first filter out non-ML titles and honeypots. We then compute semantic scores via weighted JD-section embeddings (using `BAAI/bge-small-en-v1.5`), explicitly penalizing anti-pattern matches.
-2. **Cross-Encoder Reranking (45%)**: We rerank the top candidates using a Cross-Encoder (`BAAI/bge-reranker-v2-m3`). It scores a synthesized candidate profile (top skills, title, summary, work history) against our nuanced JD text to catch subtle, deep contextual matches.
+2. **Cross-Encoder Reranking (45%)**: We rerank the top candidates using a Cross-Encoder (`BAAI/bge-reranker-base`). It scores a synthesized candidate profile (top skills, title, summary, work history) against our nuanced JD text to catch subtle, deep contextual matches.
 3. **Structured Signals (20%)**: We integrate years of experience, notice period, recruiter engagement rates, recency, GitHub activity, and assessment credibility into a base structured score.
 
 Before blending, each of the three component scores (semantic, cross-encoder, structured) is min-max normalized over the retrieved candidate set, so the 45/35/20 weights reflect true relative influence rather than being skewed by the components' differing natural scales.

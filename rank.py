@@ -13,9 +13,8 @@ OUT = Path("artifacts")
 
 # ── Configuration ──────────────────────────────────────────────────
 TOP_K_RETRIEVAL = 200                        # candidates sent to cross-encoder
-CROSS_ENCODER_MODEL = str(OUT / "bge-reranker-v2-m3")
-CROSS_ENCODER_BATCH_SIZE = 8
-
+CROSS_ENCODER_MODEL = "BAAI/bge-reranker-base"
+CROSS_ENCODER_BATCH_SIZE = 16
 # Score blending weights (must sum to 1.0)
 W_CROSS      = 0.45
 W_SEMANTIC   = 0.35

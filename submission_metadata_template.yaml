@@ -78,7 +78,7 @@ methodology_summary: |
   Our ranking engine uses a 3-stage hybrid architecture designed to aggressively filter out keyword stuffers and favor deep production experience. 
   
   1. Hard Gates & Initial Retrieval (35%): First, we drop honeypots and non-ML titles. Then we compute semantic scores via weighted JD-section embeddings, while penalizing anti-pattern matches.
-  2. Cross-Encoder Reranking (45%): We rerank top candidates using a BAAI/bge-reranker-v2-m3 cross-encoder. It scores a synthesized profile (top skills, title, summary, work history) against our nuanced JD text, catching subtle contextual matches.
+  2. Cross-Encoder Reranking (45%): We rerank top candidates using a BAAI/bge-reranker-base cross-encoder. It scores a synthesized profile (top skills, title, summary, work history) against our nuanced JD text, catching subtle contextual matches.
   3. Structured Signals (20%): We combine years of experience, notice period, recruiter engagement rates, recency, and assessment credibility.
   
   Finally, a robust multiplier actively penalizes heavily consulting-based careers, exclusively framework-driven engineers lacking deep retrieval knowledge, and suspicious CV-primary claimers.
