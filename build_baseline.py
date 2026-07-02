@@ -112,12 +112,17 @@ JD_SECTIONS = {
 }
 
 # ── 2. Load model ─────────────────────────────────────────────────
+# Force CPU: the hackathon requires CPU-only inference (uses_gpu_for_inference
+# must be false), and sentence-transformers' auto device selection picks Apple
+# MPS/Metal here, which both violates that constraint and deadlocks on encode.
+DEVICE = "cpu"
+
 print("Loading model...")
-model = SentenceTransformer('BAAI/bge-small-en-v1.5')
+model = SentenceTransformer('BAAI/bge-small-en-v1.5', device=DEVICE)
 model.save(str(OUT / 'bge-small-en-v1.5'))
 
 print("Loading CrossEncoder for offline usage in rank.py...")
-cross_model = CrossEncoder('BAAI/bge-reranker-v2-m3')
+cross_model = CrossEncoder('BAAI/bge-reranker-v2-m3', device=DEVICE)
 cross_model.save(str(OUT / 'bge-reranker-v2-m3'))
 
 # ── 3. Embed JD sections ──────────────────────────────────────────

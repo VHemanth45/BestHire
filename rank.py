@@ -4,6 +4,7 @@ import numpy as np
 import json
 import pandas as pd
 import time
+import zlib
 from datetime import datetime, date
 from pathlib import Path
 from sentence_transformers import CrossEncoder
@@ -53,7 +54,8 @@ print(f"\nLoading cross-encoder: {CROSS_ENCODER_MODEL}")
 t0_model = time.perf_counter()
 cross_encoder = CrossEncoder(
     CROSS_ENCODER_MODEL,
-    local_files_only=True
+    local_files_only=True,
+    device="cpu",  # CPU-only per hackathon rule; also avoids MPS deadlock on Apple Silicon
 )
 print(f"Cross-encoder loaded in {time.perf_counter() - t0_model:.1f}s")
 
@@ -126,7 +128,12 @@ DEEP_RETRIEVAL_SKILLS = {
     "Learning to Rank", "Information Retrieval", "pgvector"
 }
 
-TODAY = date.today()
+# Pinned reference "today" for reproducibility. Recency, notice-period, and
+# inactivity scores all depend on this — using date.today() would make the
+# ranking drift every day the script is run. Set to the dataset's evaluation
+# date so results are stable and reproducible across runs/machines.
+REFERENCE_DATE = date(2026, 7, 1)
+TODAY = REFERENCE_DATE
 
 # ── JD query text for cross-encoder ────────────────────────────────
 JD_QUERY_TEXT = (
@@ -517,50 +524,76 @@ print(f"Sigmoid-normalized score range: [{norm_cross_scores.min():.4f}, {norm_cr
 print(f"\n── Phase 3: Score Blending ──")
 print(f"Weights: cross={W_CROSS}, semantic={W_SEMANTIC}, structured={W_STRUCTURED}")
 
+def minmax_normalize(x):
+    """Scale an array to [0, 1] over the retrieved set.
+
+    Returns 0.5 for every element if the values are (near-)constant, so a
+    degenerate component contributes neutrally instead of blowing up.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    lo, hi = x.min(), x.max()
+    if hi - lo < 1e-12:
+        return np.full_like(x, 0.5)
+    return (x - lo) / (hi - lo)
+
+
+# ── Gather raw component scores across the retrieved set ───────────
+raw_semantic   = np.array([float(sem_scores[idx]) for idx in topk_indices])
+raw_cross      = norm_cross_scores.astype(np.float64)  # aligned to topk order
+struct_infos   = [compute_structured_scores(idx) for idx in topk_indices]
+raw_structured = np.array([si["structured_combined"] for si in struct_infos])
+multipliers    = np.array([compute_multiplier(cands[idx]) for idx in topk_indices])
+
+# ── Put the three signals on a comparable [0,1] scale ──────────────
+# Semantic (~0.1-0.4), cross-encoder sigmoid (~0.3-0.95), and structured
+# ([0,1] mean) have different natural ranges. Blending them raw lets the
+# cross-encoder dominate beyond its intended 0.45 weight and under-weights
+# semantic. Min-max normalizing each component over the retrieved candidate
+# set makes the blend weights reflect true relative influence.
+norm_semantic   = minmax_normalize(raw_semantic)
+norm_cross_n    = minmax_normalize(raw_cross)
+norm_structured = minmax_normalize(raw_structured)
+
+# ── Blend + apply multiplier ───────────────────────────────────────
 final_scores_topk = np.zeros(len(topk_indices))
 diagnostics = []
 
 for i, idx in enumerate(topk_indices):
-    c = cands[idx]
-
-    # Semantic component (already computed)
-    semantic = float(sem_scores[idx])
-
-    # Structured component
-    struct_info = compute_structured_scores(idx)
-    structured = struct_info["structured_combined"]
-
-    # Cross-encoder component (already normalized)
-    cross_score = float(norm_cross_scores[i])
-
-    # Multiplier (existing logic preserved)
-    multiplier = compute_multiplier(c)
-
-    # Blended score
     blended = (
-        W_CROSS      * cross_score +
-        W_SEMANTIC   * semantic    +
-        W_STRUCTURED * structured
+        W_CROSS      * norm_cross_n[i]  +
+        W_SEMANTIC   * norm_semantic[i] +
+        W_STRUCTURED * norm_structured[i]
     )
-    final = blended * multiplier
-
+    final = blended * multipliers[i]
     final_scores_topk[i] = final
 
-    # Store diagnostics
+    struct_info = struct_infos[i]
+
+    # Store diagnostics — both raw and normalized components for auditing
     diagnostics.append({
         "candidate_id": ids[idx],
-        "semantic_score": round(semantic, 4),
-        "cross_encoder_score": round(cross_score, 4),
+        "semantic_score": round(float(raw_semantic[i]), 4),
+        "semantic_norm": round(float(norm_semantic[i]), 4),
+        "cross_encoder_score": round(float(raw_cross[i]), 4),
+        "cross_encoder_norm": round(float(norm_cross_n[i]), 4),
         "cross_encoder_raw": round(float(raw_cross_scores[i]), 4),
-        "structured_score": round(structured, 4),
-        "multiplier": round(multiplier, 4),
-        "final_score": round(final, 4),
+        "structured_score": round(float(raw_structured[i]), 4),
+        "structured_norm": round(float(norm_structured[i]), 4),
+        "multiplier": round(float(multipliers[i]), 4),
+        "final_score": round(float(final), 4),
         **{k: round(v, 4) for k, v in struct_info.items()
            if k != "structured_combined"},
     })
 
 # ── Top 100 ────────────────────────────────────────────────────────
-top100_order = np.argsort(final_scores_topk)[::-1][:100]
+# Sort by final score descending, breaking ties by candidate_id ascending.
+# validate_submission.py enforces this exact tie-break rule, and np.argsort
+# gives no ordering guarantee for equal scores — so sort explicitly.
+order_all = sorted(
+    range(len(topk_indices)),
+    key=lambda i: (-final_scores_topk[i], ids[topk_indices[i]]),
+)
+top100_order = np.array(order_all[:100], dtype=int)
 top100_idx_global = topk_indices[top100_order]
 
 # ── Honeypot check on top 100 ──────────────────────────────────────
@@ -568,11 +601,36 @@ top100_idx_global = topk_indices[top100_order]
 honeypot_in_top100 = sum(
     1 for idx in top100_idx_global if is_honeypot(cands[idx])
 )
-print(f"\nHoneypots in top 100: {honeypot_in_top100} "
-      f"({'⚠️  RISK' if honeypot_in_top100 > 5 else '✅ OK'})")
+# Submission is disqualified if >10 honeypots land in the top 100, so warn
+# against that threshold (with an early-caution band as we approach it).
+if honeypot_in_top100 > 10:
+    honeypot_status = "⛔ DISQUALIFYING (>10)"
+elif honeypot_in_top100 > 5:
+    honeypot_status = "⚠️  CAUTION (approaching limit)"
+else:
+    honeypot_status = "✅ OK"
+print(f"\nHoneypots in top 100: {honeypot_in_top100} ({honeypot_status})")
 
 
 # ── Reasoning ──────────────────────────────────────────────────────
+def snippet(text, max_len=170):
+    """Trim text to a clean word boundary, adding an ellipsis only if we
+    actually truncated. Avoids the mid-word cuts (".. to liv...") that a raw
+    string slice produces, and prefers ending on a sentence boundary.
+    """
+    text = " ".join(text.split()).strip()  # collapse internal whitespace
+    if len(text) <= max_len:
+        return text.rstrip(".")
+    cut = text[:max_len]
+    # Prefer the last sentence end within the window; else last word boundary.
+    last_period = cut.rfind(". ")
+    if last_period >= max_len * 0.5:
+        return cut[:last_period].rstrip(",;: ")
+    if " " in cut:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(",;: .") + "…"
+
+
 def make_reasoning(c, rank):
     p   = c["profile"]
     sig = c["redrob_signals"]
@@ -591,7 +649,7 @@ def make_reasoning(c, rank):
     )
 
     last_active_date = datetime.strptime(active, "%Y-%m-%d").date()
-    days_inactive = (date.today() - last_active_date).days
+    days_inactive = (REFERENCE_DATE - last_active_date).days
 
     # Skills analysis
     all_skills = c.get("skills", [])
@@ -619,7 +677,8 @@ def make_reasoning(c, rank):
     # Career history signals
     history = c.get("career_history", [])
     recent_company = history[0].get("company", company) if history else company
-    recent_desc = history[0].get("description", "")[:120] if history else ""
+    # Keep the full description here; snippet() trims it on a clean boundary.
+    recent_desc = history[0].get("description", "") if history else ""
 
     # ── Build reasoning parts ──────────────────────────────────────
 
@@ -661,8 +720,10 @@ def make_reasoning(c, rank):
             f"{yoe:.1f}yr {title} at {company}; profile doesn't strongly match retrieval/ranking mandate",
         ]
 
-    # Use hash of candidate_id for deterministic but varied selection
-    opener_idx = hash(c.get("candidate_id", "")) % len(openers)
+    # Use a STABLE hash of candidate_id for deterministic but varied selection.
+    # Python's built-in hash() is salted per-process (PYTHONHASHSEED), so it
+    # would pick different openers on every run — zlib.crc32 is stable.
+    opener_idx = zlib.crc32(c.get("candidate_id", "").encode("utf-8")) % len(openers)
     opening = openers[opener_idx]
 
     # PART 2: JD connection
@@ -693,9 +754,9 @@ def make_reasoning(c, rank):
     # PART 3: Nice-to-have or career narrative signal
     narrative_part = ""
     if recent_desc and rank <= 30:
-        # Trim description to meaningful snippet
-        snippet = recent_desc.strip().rstrip(".")
-        narrative_part = f"Recent work at {recent_company} involved: \"{snippet}...\""
+        # Trim description to a clean, readable snippet (no mid-word cuts)
+        desc_snippet = snippet(recent_desc, 170)
+        narrative_part = f"Recent work at {recent_company}: \"{desc_snippet}\""
     elif nice_hits and rank <= 50:
         nice_names = [s["name"] for s in nice_hits[:2]]
         narrative_part = f"Also brings {', '.join(nice_names)} — useful for the eval framework and fine-tuning aspects of the role."
@@ -780,8 +841,11 @@ df.to_csv("submission_new.csv", index=False)
 
 # ── Diagnostics CSV ────────────────────────────────────────────────
 diag_df = pd.DataFrame(diagnostics)
-# Sort by final_score descending
-diag_df = diag_df.sort_values("final_score", ascending=False).reset_index(drop=True)
+# Sort by final_score descending, tie-break candidate_id ascending — same
+# ordering as the submission so diagnostics ranks line up with it.
+diag_df = diag_df.sort_values(
+    ["final_score", "candidate_id"], ascending=[False, True]
+).reset_index(drop=True)
 diag_df.insert(0, "rank", range(1, len(diag_df) + 1))
 diag_df.to_csv("diagnostics.csv", index=False)
 print(f"\nDiagnostics saved → diagnostics.csv ({len(diag_df)} rows)")

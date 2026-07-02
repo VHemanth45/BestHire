@@ -1,0 +1,7 @@
+# Runtime deps for the BestHire ranker Space.
+# NOTE: do NOT add `gradio` here — for a Gradio SDK Space the gradio version is
+# controlled by `sdk_version` in README.md, and pinning it twice can conflict.
+sentence-transformers>=5.0.0
+torch>=2.2.0
+numpy>=1.26.0
+pandas>=2.0.0

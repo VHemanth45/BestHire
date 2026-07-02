@@ -10,7 +10,11 @@ Our ranking engine utilizes a 3-stage hybrid architecture designed to aggressive
 2. **Cross-Encoder Reranking (45%)**: We rerank the top candidates using a Cross-Encoder (`BAAI/bge-reranker-v2-m3`). It scores a synthesized candidate profile (top skills, title, summary, work history) against our nuanced JD text to catch subtle, deep contextual matches.
 3. **Structured Signals (20%)**: We integrate years of experience, notice period, recruiter engagement rates, recency, GitHub activity, and assessment credibility into a base structured score.
 
+Before blending, each of the three component scores (semantic, cross-encoder, structured) is min-max normalized over the retrieved candidate set, so the 45/35/20 weights reflect true relative influence rather than being skewed by the components' differing natural scales.
+
 Finally, a robust multiplier actively penalizes heavily consulting-based careers, exclusively framework-driven engineers lacking deep retrieval knowledge, and suspicious CV-primary claimers.
+
+> **Reproducibility:** Ranking is fully deterministic — scoring uses a pinned `REFERENCE_DATE` (not `date.today()`) so recency/notice signals don't drift between runs, reasoning selection uses a stable hash, and ties are broken by `candidate_id` ascending to match the submission validator.
 
 ## ⚙️ Setup Instructions
 
