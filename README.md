@@ -23,13 +23,18 @@ Finally, a robust multiplier actively penalizes heavily consulting-based careers
 - Ensure the `candidates.jsonl` dataset is located in the root of the repository.
 
 **Installation:**
-This project relies on standard data science and ML libraries. If you are using `uv`, simply run:
+First, create a virtual environment and activate it:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+Then, install the dependencies. If you are using `uv`, simply run:
 ```bash
 uv sync
 ```
 *Alternatively, you can install the dependencies via pip:*
 ```bash
-pip install pandas numpy sentence-transformers
+pip install -r requirements.txt
 ```
 
 ## 🚀 How to Reproduce the Submission CSV

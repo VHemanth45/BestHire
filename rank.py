@@ -590,7 +590,7 @@ for i, idx in enumerate(topk_indices):
 # gives no ordering guarantee for equal scores — so sort explicitly.
 order_all = sorted(
     range(len(topk_indices)),
-    key=lambda i: (-final_scores_topk[i], ids[topk_indices[i]]),
+    key=lambda i: (-round(final_scores_topk[i], 4), ids[topk_indices[i]]),
 )
 top100_order = np.array(order_all[:100], dtype=int)
 top100_idx_global = topk_indices[top100_order]
